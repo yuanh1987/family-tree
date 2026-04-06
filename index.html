@@ -1,0 +1,416 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>李氏家族族譜 - 互動編輯版</title>
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+    <script src="https://accounts.google.com/gsi/client" async defer></script>
+    <style>
+        /* 登入遮罩 */
+        #login-overlay {
+            position: fixed;
+            top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(255, 255, 255, 0.9);
+            z-index: 10000;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            backdrop-filter: blur(5px);
+        }
+        .login-box {
+            padding: 40px;
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.1);
+            text-align: center;
+            max-width: 400px;
+        }
+        .login-box h2 { color: #2c3e50; margin-bottom: 10px; }
+        .login-box p { color: #666; margin-bottom: 25px; }
+        #auth-status { margin-top: 15px; font-size: 14px; color: #d32f2f; }
+
+        body { font-family: "PingFang TC", "Microsoft JhengHei", sans-serif; background: #FAF9F6; margin: 0; display: flex; flex-direction: column; height: 100vh; color: #333; }
+        header { background: #2c3e50; color: white; padding: 1rem; text-align: center; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
+        h1 { margin: 0; font-size: 1.5rem; letter-spacing: 2px; }
+        p { margin: 5px 0 0; font-size: 0.9rem; opacity: 0.8; }
+        
+        #tree-container { flex: 1; overflow: hidden; cursor: grab; background-image: radial-gradient(#d7d7d7 1px, transparent 1px); background-size: 20px 20px; }
+        #tree-container:active { cursor: grabbing; }
+
+        .node path.leaf { stroke-width: 3.5px; opacity: 0.85; transition: transform 0.3s, fill 0.3s; }
+        .node text { font-size: 12px; pointer-events: none; }
+        
+        /* 主脈 (Main Lineage) - 暗紅邊, 內粉/藍 */
+        .node--male path.leaf { fill: #90CAF9; stroke: #2E7D32; }
+        .node--female path.leaf { fill: #F48FB1; stroke: #2E7D32; }
+        
+        /* 房份/配偶 (Spouses) - 暗紅虛線邊, 內粉(女) */
+        .node--wife path.leaf { fill: #F48FB1; stroke: #2E7D32; stroke-dasharray: 5,5; }
+        
+        /* 妻族/親族支脈 (Affiliated) - 寶石綠邊, 內粉/藍 */
+        .node--affiliated--male path.leaf { fill: #90CAF9; stroke: #388E3C; }
+        .node--affiliated--female path.leaf { fill: #F48FB1; stroke: #388E3C; }
+        
+        /* 收合狀態 */
+        .node--collapsed path.leaf { fill: #bdc3c7 !important; stroke-dasharray: none; }
+        
+        /* 連線 */
+        .link { fill: none; stroke: #A1887F; stroke-width: 1.5px; opacity: 0.4; }
+        .link--affiliated { fill: none; stroke: #33691E; stroke-width: 1.5px; stroke-dasharray: 5,5; opacity: 0.6; }
+
+        .tooltip { position: absolute; background: rgba(255, 255, 255, 0.95); border: 1px solid #ddd; padding: 12px; border-radius: 8px; box-shadow: 0 4px 15px rgba(0,0,0,0.1); pointer-events: none; opacity: 0; transition: opacity 0.3s; z-index: 100; min-width: 150px; }
+        .tooltip h4 { margin: 0 0 5px; color: #2c3e50; border-bottom: 1px solid #eee; padding-bottom: 5px; }
+        .tooltip p { margin: 3px 0; font-size: 13px; color: #666; }
+
+        .controls { position: absolute; bottom: 30px; left: 30px; display: flex; flex-direction: column; gap: 10px; }
+        .btn { width: 40px; height: 40px; background: white; border: none; border-radius: 50%; cursor: pointer; box-shadow: 0 2px 10px rgba(0,0,0,0.1); display: flex; align-items: center; justify-content: center; font-size: 20px; color: #2c3e50; transition: transform 0.2s; }
+        .btn:hover { transform: scale(1.1); background: #fdfdfd; }
+        
+        .search-box { position: absolute; top: 100px; left: 30px; background: white; padding: 10px; border-radius: 25px; box-shadow: 0 2px 15px rgba(0,0,0,0.1); display: flex; align-items: center; }
+        .search-box input { border: none; outline: none; padding: 5px 15px; width: 200px; font-size: 14px; }
+
+        /* 編輯視窗樣式 */
+        .modal { display: none; position: fixed; z-index: 1000; left: 0; top: 0; width: 100%; height: 100%; overflow-y: auto; background-color: rgba(0,0,0,0.4);-webkit-overflow-scrolling: touch; }
+        .modal-content { background-color: #fefefe; margin: 20px auto; padding: 20px; border: 1px solid #888; width: 90%; max-width: 500px; border-radius: 8px; position: relative; max-height: 80vh; overflow-y: auto; }
+        .modal h3 { margin-top: 0; color: #2c3e50; border-bottom: 2px solid #eee; padding-bottom: 10px; }
+        .form-group { margin-bottom: 15px; }
+        .form-group label { display: block; margin-bottom: 5px; font-weight: bold; font-size: 14px; }
+        .form-group input, .form-group select, .form-group textarea { width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px; box-sizing: border-box; }
+        .modal-footer { text-align: right; margin-top: 20px; }
+        .btn-save { background: #2E7D32; color: white; border: none; padding: 10px 20px; border-radius: 4px; cursor: pointer; }
+        .btn-cancel { background: #eee; border: none; padding: 10px 20px; border-radius: 4px; cursor: pointer; margin-right: 10px; }
+        .btn-delete { background: #d32f2f; color: white; border: none; padding: 5px 10px; border-radius: 4px; cursor: pointer; float: left; font-size: 12px; }
+    </style>
+</head>
+<body>
+    <!-- 登入遮罩 -->
+    <div id="login-overlay">
+        <div class="login-box">
+            <img src="https://upload.wikimedia.org/wikipedia/commons/5/53/Google_%22G%22_Logo.svg" width="40" style="margin-bottom: 20px;">
+            <h2>歡迎使用李氏家族族譜</h2>
+            <p>請使用 Google 帳號登入以查看家族資料</p>
+            <div id="g_id_onload"
+                data-client_id="279598281528-3issltk2mlm3dl51cbk0kda9n502njdt.apps.googleusercontent.com"
+                data-callback="handleCredentialResponse"
+                data-auto_prompt="false">
+            </div>
+            <div class="g_id_signin"
+                data-type="standard"
+                data-size="large"
+                data-theme="outline"
+                data-text="sign_in_with"
+                data-shape="rectangular"
+                data-logo_alignment="left">
+            </div>
+            <div id="auth-status"></div>
+        </div>
+    </div>
+
+    <header>
+        <h1>李氏家族族譜</h1>
+        <p>太公 李國安 派裔家族路徑圖</p>
+    </header>
+
+    <div class="search-box">
+        <input type="text" id="searchInput" placeholder="搜尋家人姓名..." onkeyup="searchNode()">
+    </div>
+
+    <div id="tree-container"></div>
+    <div class="tooltip" id="tooltip"></div>
+
+    <div class="controls">
+        <button class="btn" onclick="zoomIn()" title="放大">＋</button>
+        <button class="btn" onclick="zoomOut()" title="縮小">－</button>
+        <button class="btn" onclick="resetZoom()" title="重置">🏠</button>
+    </div>
+
+    <div style="position: absolute; top: 100px; right: 30px;">
+        <button class="btn" onclick="openHelp()" style="width: auto; border-radius: 20px; padding: 0 15px; font-size: 14px;">💡 操作說明</button>
+    </div>
+    
+    <div id="helpModal" class="modal">
+        <div class="modal-content" style="width: 400px;">
+            <h3>💡 如何使用族譜？</h3>
+            <ul style="line-height: 1.8; font-size: 14px;">
+                <li><b>單擊葉子</b>：查看、編輯資料或新增小孩。</li>
+                <li><b>Alt + 點擊</b>：展開或收合該家族分支。</li>
+                <li><b>滑鼠滾輪</b>：放大或縮小族譜地圖。</li>
+                <li><b>左上角搜尋</b>：輸入家人姓名可快速定位。</li>
+            </ul>
+            <div class="modal-footer"><button class="btn-save" onclick="closeHelp()">知道了</button></div>
+        </div>
+    </div>
+
+    <!-- 編輯 Modal -->
+    <div id="editModal" class="modal">
+        <div class="modal-content">
+            <h3 id="modalTitle">編輯成員</h3>
+            <input type="hidden" id="f_id">
+            <input type="hidden" id="f_parentId">
+            <input type="hidden" id="f_category">
+            <div class="form-group"><label>中文姓名</label><input type="text" id="f_name"></div>
+            <div class="form-group"><label>英文姓名</label><input type="text" id="f_name_en"></div>
+            <div class="form-group">
+                <label>稱謂/輩分</label>
+                <input type="text" id="f_title" placeholder="絕對輩分(如: 長子、次女)，勿填相對稱呼">
+            </div>
+            <div class="form-group"><label>性別</label><select id="f_gender"><option value="male">男</option><option value="female">女</option></select></div>
+            <div class="form-group"><label>配偶</label><input type="text" id="f_spouse"></div>
+            <div class="form-group"><label>出生日期</label><input type="text" id="f_birth"></div>
+            <div class="form-group"><label>逝世日期</label><input type="text" id="f_death" placeholder="若健在請留空"></div>
+            <div class="form-group"><label>生平簡介</label><textarea id="f_bio" rows="3"></textarea></div>
+            <div class="modal-footer">
+                <button class="btn-delete" id="btnDelete" onclick="doDelete()">🗑️ 刪除</button>
+                <button class="btn-cancel" onclick="closeModal()">取消</button>
+                <button class="btn-save" id="btnAddChild" onclick="prepareAddChild()" style="background: #1976D2; margin-right: 10px;">➕ 新增子嗣</button>
+                <button class="btn-save" id="btnSave" onclick="doSave()">儲存變更</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // --- 設定區 ---
+        // 請務必將此處替換為您部署 GAS 後得到的 Web App 網址
+        const GAS_API_URL = "https://script.google.com/macros/s/AKfycbzWqlLmWnZzvW-Lcr4hcCyUr0_yH5GOcpzVbeHQgS_kxzzoGxC4a6emOwl9xVF_jxmv/exec";
+        let userCredential = null;
+
+        async function callApi(action, data = {}) {
+            const response = await fetch(GAS_API_URL, {
+                method: "POST",
+                mode: "no-cors", // 注意：GAS POST 必須使用 no-cors 或是透過 Redirect 處理
+                body: JSON.stringify({
+                    credential: userCredential,
+                    action: action,
+                    ...data
+                })
+            });
+            // 由於 GAS 的 CORS 限制，mode: "no-cors" 抓不到 response。
+            // 為了完整支援，我們改用傳統的 "跟隨重新導向" 方式處理：
+            
+            return new Promise((resolve, reject) => {
+                fetch(GAS_API_URL, {
+                    method: "POST",
+                    body: JSON.stringify({
+                        credential: userCredential,
+                        action: action,
+                        ...data
+                    })
+                })
+                .then(res => res.json())
+                .then(json => resolve(json))
+                .catch(err => reject(err));
+            });
+        }
+
+        // --- 登入邏輯 ---
+        function handleCredentialResponse(response) {
+            userCredential = response.credential;
+            document.getElementById('auth-status').innerText = '驗證中...';
+            
+            callApi('getFamilyData')
+                .then(result => {
+                    if (result.success) {
+                        document.getElementById('login-overlay').style.display = 'none';
+                        initTree(result.data);
+                    } else {
+                        document.getElementById('auth-status').innerText = '驗證失敗：' + (result.message || '您不在授權名單內');
+                    }
+                })
+                .catch(err => {
+                    document.getElementById('auth-status').innerText = '連線失敗，請檢查 GAS 網址是否正確。';
+                });
+        }
+
+        // --- UI 邏輯 ---
+        function openHelp(){document.getElementById('helpModal').style.display='block'}
+        function closeHelp(){document.getElementById('helpModal').style.display='none'}
+
+        function openEditModal(d) {
+            const data = d.data;
+            document.getElementById('modalTitle').innerText = '編輯: ' + data.name;
+            document.getElementById('f_id').value = data.id || '';
+            document.getElementById('f_parentId').value = d.parent ? d.parent.data.id : '';
+            document.getElementById('f_category').value = data.attributes?.category || '主脈';
+            document.getElementById('f_name').value = data.name || '';
+            document.getElementById('f_name_en').value = data.name_en || '';
+            document.getElementById('f_title').value = data.attributes?.title || '';
+            document.getElementById('f_gender').value = data.attributes?.gender || 'male';
+            document.getElementById('f_spouse').value = data.attributes?.spouse || '';
+            document.getElementById('f_birth').value = data.attributes?.birthDate || '';
+            document.getElementById('f_death').value = data.attributes?.deathDate || '';
+            document.getElementById('f_bio').value = data.attributes?.info || '';
+            
+            document.getElementById('btnDelete').style.display = (d.children || d._children) ? 'none' : 'block';
+            document.getElementById('editModal').style.display = 'block';
+        }
+
+        function prepareAddChild() {
+            const currentId = document.getElementById('f_id').value;
+            document.getElementById('f_parentId').value = currentId;
+            document.getElementById('f_id').value = '';
+            document.getElementById('f_name').value = '';
+            document.getElementById('f_name_en').value = '';
+            document.getElementById('f_title').value = '';
+            document.getElementById('f_spouse').value = '';
+            document.getElementById('f_birth').value = '';
+            document.getElementById('f_death').value = '';
+            document.getElementById('f_bio').value = '';
+            document.getElementById('f_category').value = '主脈';
+            document.getElementById('modalTitle').innerText = '新增子嗣';
+            document.getElementById('btnDelete').style.display = 'none';
+            document.getElementById('btnAddChild').style.display = 'none';
+            document.getElementById('btnSave').innerText = '儲存新成員';
+        }
+
+        function closeModal() { document.getElementById('editModal').style.display = 'none'; }
+
+        function doSave() {
+            const memberData = {
+                id: document.getElementById('f_id').value,
+                parentId: document.getElementById('f_parentId').value,
+                name: document.getElementById('f_name').value,
+                name_en: document.getElementById('f_name_en').value,
+                title: document.getElementById('f_title').value,
+                gender: document.getElementById('f_gender').value,
+                spouse: document.getElementById('f_spouse').value,
+                birthDate: document.getElementById('f_birth').value,
+                deathDate: document.getElementById('f_death').value,
+                bio: document.getElementById('f_bio').value,
+                category: document.getElementById('f_category').value
+            };
+            
+            const btn = document.getElementById('btnSave');
+            btn.innerText = '儲存中...';
+            btn.disabled = true;
+
+            callApi('saveMember', { memberData: memberData })
+                .then(() => { location.reload(); })
+                .catch(err => { alert('儲存失敗'); btn.disabled = false; btn.innerText = '儲存變更'; });
+        }
+
+        function doDelete() {
+            if (!confirm('確定要永久刪除此成員嗎？')) return;
+            const id = document.getElementById('f_id').value;
+            callApi('deleteMember', { id: id })
+                .then(() => { location.reload(); })
+                .catch(err => { alert('刪除失敗'); });
+        }
+
+        // --- D3 族譜邏輯 ---
+        const width = window.innerWidth;
+        const height = window.innerHeight;
+        let i = 0, duration = 750, root;
+
+        const tree = d3.tree().nodeSize([50, 240]);
+        const svg = d3.select("#tree-container").append("svg")
+            .attr("width", "100%")
+            .attr("height", "100%")
+            .call(d3.zoom().on("zoom", (event) => {
+                g.attr("transform", event.transform);
+            }))
+            .on("dblclick.zoom", null);
+
+        const g = svg.append("g").attr("transform", "translate(150, " + height/2 + ")");
+
+        function initTree(data) {
+            root = d3.hierarchy(data, d => d.children);
+            root.x0 = 0;
+            root.y0 = 0;
+            update(root);
+        }
+
+        function update(source) {
+            const nodes = tree(root).descendants(),
+                  links = tree(root).links();
+
+            nodes.forEach(d => d.y = d.depth * 250);
+
+            const node = g.selectAll('g.node')
+                .data(nodes, d => d.id || (d.id = ++i));
+
+            const nodeEnter = node.enter().append('g')
+                .attr('class', d => { let cls = 'node '; if(d.data.attributes?.isAffiliatedBranch) { cls += d.data.attributes?.gender === 'female' ? 'node--affiliated--female' : 'node--affiliated--male'; } else if (d.data.attributes?.isWife) { cls += 'node--wife'; } else { cls += d.data.attributes?.gender === 'female' ? 'node--female' : 'node--male'; } return cls; })
+                .attr("transform", d => `translate(${source.y0},${source.x0})`)
+                .on('click', (event, d) => {
+                    if (event.altKey) {
+                        if (d.children) { d._children = d.children; d.children = null; } 
+                        else { d.children = d._children; d._children = null; } 
+                        update(d);
+                    } else {
+                        openEditModal(d);
+                    }
+                })
+                .on('mouseover', (event, d) => {
+                    const tooltip = d3.select("#tooltip");
+                    tooltip.transition().duration(200).style("opacity", .9);
+                    let titleStr = d.data.attributes?.title ? ` (${d.data.attributes.title})` : '';
+                    let enStr = d.data.name_en ? ` (${d.data.name_en})` : '';
+                    let h = `<h4>${d.data.name}${titleStr}${enStr}</h4>`;
+                    if(d.data.attributes?.spouse) h += `<p><b>配偶:</b> ${d.data.attributes.spouse}</p>`;
+                    if(d.data.attributes?.birthDate) h += `<p><b>出生日期:</b> ${d.data.attributes.birthDate}</p>`;
+                    if(d.data.attributes?.deathDate) h += `<p><b>逝世日期:</b> ${d.data.attributes.deathDate}</p>`;
+                    if(d.data.attributes?.info) h += `<p><b>生平簡介:</b> ${d.data.attributes.info}</p>`;
+                    tooltip.html(h)
+                        .style("left", (event.pageX + 15) + "px")
+                        .style("top", (event.pageY - 28) + "px");
+                })
+                .on('mouseout', () => {
+                    d3.select("#tooltip").transition().duration(500).style("opacity", 0);
+                });
+
+            nodeEnter.append('path')
+                .attr('class', 'leaf')
+                .attr('d', d => "M -10 0 C -10 -12, 8 -15, 15 0 C 8 15, -10 12, -10 0 Z")
+                .attr('transform', 'scale(0)');
+
+            nodeEnter.append('text')
+                .attr("class", "name-text")
+                .attr("dy", d => (d.data.attributes?.spouse && !d.data.attributes?.isWife) ? "-0.2em" : "0.35em")
+                .attr("x", d => d.children || d._children ? -15 : 15)
+                .attr("text-anchor", d => d.children || d._children ? "end" : "start")
+                .text(d => d.data.name + (d.data.attributes?.title ? " (" + d.data.attributes.title + ")" : "") + (d.data.name_en ? " (" + d.data.name_en + ")" : ""))
+                .style("fill-opacity", 1e-6);
+
+            const nodeUpdate = nodeEnter.merge(node);
+            nodeUpdate.transition().duration(duration).attr("transform", d => `translate(${d.y},${d.x})`);
+            nodeUpdate.select('path.leaf').attr('transform', 'scale(0.85)').attr('class', d => 'leaf ' + (d._children ? "node--collapsed" : ""));
+            nodeUpdate.selectAll('text').style("fill-opacity", 1);
+
+            const nodeExit = node.exit().transition().duration(duration).attr("transform", d => `translate(${source.y},${source.x})`).remove();
+            nodeExit.select('path.leaf').attr('transform', 'scale(0)');
+            nodeExit.selectAll('text').style('fill-opacity', 1e-6);
+
+            const link = g.selectAll('path.link').data(links, d => d.target.id);
+            const linkEnter = link.enter().insert('path', "g")
+                .attr("class", d => `link ${d.target.data.attributes?.isAffiliatedBranch ? 'link--affiliated' : ''}`)
+                .attr('d', d => { const o = {x: source.x0, y: source.y0}; return diagonal(o, o); });
+
+            const linkUpdate = linkEnter.merge(link);
+            linkUpdate.transition().duration(duration).attr('d', d => diagonal(d.source, d.target));
+            link.exit().transition().duration(duration).attr('d', d => { const o = {x: source.x, y: source.y}; return diagonal(o, o); }).remove();
+
+            nodes.forEach(d => { d.x0 = d.x; d.y0 = d.y; });
+            function diagonal(s, d) { return `M ${s.y} ${s.x} C ${(s.y + d.y) / 2} ${s.x}, ${(s.y + d.y) / 2} ${d.x}, ${d.y} ${d.x}`; }
+        }
+
+        const zoom = d3.zoom().on("zoom", (event) => { g.attr("transform", event.transform); });
+        function zoomIn() { svg.transition().call(zoom.scaleBy, 1.3); }
+        function zoomOut() { svg.transition().call(zoom.scaleBy, 0.7); }
+        function resetZoom() { svg.transition().call(zoom.transform, d3.zoomIdentity.translate(150, height/2)); }
+
+        function searchNode() {
+            const name = document.getElementById("searchInput").value;
+            if(!name) return;
+            g.selectAll("g.node").each(function(d) {
+                if(d.data.name && d.data.name.includes(name)) {
+                    d3.select(this).select("path.leaf").transition().duration(200).attr("transform", "scale(1.8)").style("fill", "#FFD54F");
+                    const target = d;
+                    setTimeout(() => { update(target); }, 5000);
+                }
+            });
+        }
+    </script>
+</body>
+</html>
